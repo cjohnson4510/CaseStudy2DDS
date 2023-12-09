@@ -1,0 +1,230 @@
+---
+title: "EDA"
+author: "CJ"
+date: "2023-12-05"
+output: html_document
+---
+Import nessecary libraries
+```{r}
+library (ggplot2)
+library (dplyr)
+library(tidyverse)
+library(naniar)
+library(corrplot)
+library(e1071)
+```
+
+Import CSV and Check for missing values
+```{r}
+csd=read.csv("/Users/christopherjohnson/Downloads/CaseStudy2-data.csv",header = TRUE)
+csd
+miss_var_summary(csd)
+```
+No missing data found
+
+
+
+Calculate percentage of current attrition
+```{r}
+atr=table(csd$Attrition)
+atr/sum(atr)*100
+```
+Significantly more No attrition than Yes attrition
+
+Remove columns that have the same value throughout data (Over18, Standardhours, Employeecount)
+```{r}
+csd2=csd[,-c(10, 23, 28 )]
+```
+
+
+String Columns by attrition
+```{r}
+csd2$Attrition <- as.factor(csd2$Attrition)
+# Identify string columns
+string_columns <- sapply(csd2, is.character)
+
+# Calculate percent attrition for each unique value in each string column
+attrition_percentages <- lapply(names(csd2)[string_columns], function(column) {
+  # For each unique value in the column
+  unique_values <- unique(csd2[[column]])
+  
+  sapply(unique_values, function(value) {
+    # Subset the data for the specific value
+    subset_data <- csd2[csd2[[column]] == value, ]
+    
+    # Calculate percent attrition
+    percent_attrition <- sum(subset_data$Attrition == "Yes") / nrow(subset_data) * 100
+    
+    return(percent_attrition)
+  }, USE.NAMES = TRUE)
+})
+
+# Result
+attrition_percentages
+```
+
+Plot attrition percentage
+```{r}
+data_summary <- csd2%>%
+  select(Attrition, BusinessTravel, Department, EducationField, Gender, JobRole, MaritalStatus, OverTime) %>%
+  pivot_longer(cols = -Attrition, names_to = "Variable", values_to = "Level") %>%
+  group_by(Variable, Level) %>%
+  summarise(Attrition_Count = sum(Attrition == "Yes"), Total_Count = n()) %>%
+  mutate(Attrition_Percent = Attrition_Count / Total_Count * 100)
+
+# Plot
+ggplot(data_summary, aes(x = Level, y = Attrition_Percent, fill = Variable)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  geom_text(aes(label = round(Attrition_Percent,1)), vjust = 1.5, size = 2.5, color="white")+
+  facet_wrap(~ Variable, scales = "free_x") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),legend.position = "none") +
+  labs(y = "Percentage of Attrition", x = "")
+```
+
+
+ompared ranges of lowest percentages of attrition to highest for each catagory
+The two highest differences were Overtime (~22%) and JobTitle (~43%)
+Lowest catagorical variables non-travel, R&D, Medical Degree, Female, Research Director, Divorced, no-OT
+Highest catagorical variables travel-frequently, sales, Human Resource Degree, Sales Rep, Single, OT
+```{r}
+data_summary <- csd2 %>%
+  select(JobSatisfaction, BusinessTravel, Department, EducationField, Gender, JobRole, MaritalStatus, OverTime) %>%
+  pivot_longer(cols = -JobSatisfaction, names_to = "Variable", values_to = "Level") %>%
+  group_by(Variable, Level) %>%
+  summarise(Average_JobSatisfaction = mean(JobSatisfaction, na.rm = TRUE), .groups = 'drop')
+
+# Plot
+ggplot(data_summary, aes(x = Level, y = Average_JobSatisfaction, fill = Variable)) +
+  geom_col( position = position_dodge()) +
+  facet_wrap(~ Variable, scales = "free_x") +
+  theme_minimal()+
+  geom_text(aes(label = round(Average_JobSatisfaction, 3)), vjust = 1.5, size = 2.5, color="white")+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none") +
+  labs(y = "Average Job Satisfaction", x = "")
+```
+
+Create Correlation matrix and plot
+```{r}
+csd2$AtrBin = ifelse(csd2$Attrition == "Yes", 100, 0) #Change attrition to binary
+numcol =sapply(csd2, is.numeric) #find only columns with numeric values  
+csd3=csd2[,numcol] #create new dataframe  
+corr=cor(csd3) # find corrlation
+cordf=as.data.frame(as.table(corr)) #create new dataframe for plotting
+cordf2 <- cordf[cordf$Freq != 1, ] #create another data frame in descending order with values equal 1 removed
+cordf2 <- cordf2[order(-cordf2$Freq), ]
+#See strong correlation betwen monthly income vs job level
+
+cordf2[cordf2$Var1=="AtrBin",] #See correlation between Attrition only and other variables
+```
+Distance From home and Num of Companies Worked are the two highest correlation
+
+Plot data
+```{r}
+ggplot(cordf, aes(Var1, Var2, fill = Freq)) +
+  geom_tile() +
+  scale_fill_gradient(low = "blue", high = "red") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(x="Variable 1", y="Variable 2", title = "Correlation Heat Map")
+```
+
+Create KNN model
+```{r}
+library(caret)
+set.seed(3)
+
+
+
+colnames(csd2)
+csd2$sHourlyRate=scale(csd2$HourlyRate)
+csd2$sTotalWorkingYears=scale(csd2$TotalWorkingYears)
+csd2$sDistanceFromHome=scale(csd2$DistanceFromHome)
+csd2$sAge=scale(csd2$Age)
+
+train_index=createDataPartition(csd2$Attrition, p = 0.7, list = FALSE) 
+training_data = csd2[train_index, ]
+testing_data = csd2[-train_index, ]
+testing_data
+
+
+#####knn find best K value for accuracy, Sens(Ales), Spec(IPA)
+set.seed(37)
+library(class)
+mAcc = matrix(nrow = 100)
+mSen = matrix(nrow = 100)
+mSpec = matrix(nrow = 100)
+for (i in 1:100){
+  knn_model = knn(train = training_data[, c("sHourlyRate", "sTotalWorkingYears", "sDistanceFromHome", "sAge")], test = testing_data[, c("sHourlyRate", "sTotalWorkingYears", "sDistanceFromHome", "sAge")], cl = training_data$Attrition, k = i)
+  CM = confusionMatrix(table(knn_model,testing_data$Attrition))
+  mAcc[i]=CM$overall[1]
+  mSen[i]=CM$byClass[1]
+  mSpec[i]=CM$byClass[2]
+}
+max(mAcc)
+max(mSen)
+max(mSpec)
+```
+KNN Yeilded low Specificity regardless of factors and k values
+
+
+Reload data with strings as factors and perform NaiveBayes
+```{r}
+csd4=read.csv("/Users/christopherjohnson/Downloads/CaseStudy2-data.csv",header = TRUE, stringsAsFactors = TRUE)
+set.seed(3)
+train_index2=createDataPartition(csd4$Attrition, p = 0.7, list = FALSE) 
+training_data2 = csd4[train_index2, ]
+testing_data2 = csd4[-train_index2, ]
+testing_data2
+model4=naiveBayes(Attrition~., data=training_data2 )
+predictions = predict(model4, testing_data2)
+confusionMatrix(predictions,testing_data2$Attrition)
+```
+
+Read in no attrition set and predict
+```{r}
+valat=read.csv("/Users/christopherjohnson/Downloads/CaseStudy2Compset+No+Attrition.csv",header = TRUE, stringsAsFactors = TRUE)
+attritionval=predict(model4,valat)
+
+valat$Attrition=attritionval
+write.csv(valat[,c("ID","Attrition")],file="/Users/christopherjohnson/Downloads/Case2PredictionJohnsonAttrition.csv")
+```
+
+Salary prediction
+Plot correlation data to monthlyincome
+```{r}
+correlations = cor(csd4[, sapply(csd4, is.numeric)])
+corrplot(correlations, method = "circle")
+
+# Selected the 4 most correlated columns
+predictors = c('JobLevel', 'TotalWorkingYears', 'YearsAtCompany', 'Age')
+
+# Prepare the data
+X = csd4[, predictors]
+y = csd4$MonthlyIncome
+
+# Splitting the dataset into training and testing sets
+set.seed(42)
+trainIndex <- createDataPartition(y, p = .7, list = FALSE)
+X_train <- X[trainIndex, ]
+y_train <- y[trainIndex]
+X_test <- X[-trainIndex, ]
+y_test <- y[-trainIndex]
+
+# Train the linear regression model
+model7 =lm(y_train ~ ., data = as.data.frame(X_train))
+summary(model7)
+
+# Predict and calculate RMSE
+predictions = predict(model7, newdata = as.data.frame(X_test))
+rmse = sqrt(mean((predictions - y_test)^2))
+rmse
+```
+
+Load in blank data and predict
+```{r}
+valsal=read.csv("/Users/christopherjohnson/Downloads/CaseStudy2Compset+No+Salary.csv",header = TRUE, stringsAsFactors = TRUE)
+salaryval=predict(model7,valsal)
+
+valsal$MonthlyIncome=salaryval
+write.csv(valsal[,c("ID","MonthlyIncome")],file="/Users/christopherjohnson/Downloads/Case2PredictionJohnsonSalary.csv")
+```
